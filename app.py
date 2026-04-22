@@ -107,15 +107,16 @@ def create_pdf(content):
     bio = io.BytesIO()
     
     # Half A4 setup (210mm wide x 148.5mm high - A5 Landscape)
+    # Left Margin reduced to 10mm to perfectly match your FPDF X coordinate scaling
     doc = SimpleDocTemplate(bio, pagesize=(210*mm, 148.5*mm),
-                            rightMargin=15*mm, leftMargin=15*mm,
+                            rightMargin=10*mm, leftMargin=10*mm,
                             topMargin=10*mm, bottomMargin=10*mm)
     
     styles = {
-        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=11, leading=18),
-        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=11, leading=18),
-        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=18, alignment=TA_RIGHT),
-        'center': ParagraphStyle('Center', fontName=font_name, fontSize=11, leading=15, alignment=TA_CENTER)
+        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=10, leading=15),
+        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=10, leading=15),
+        'right': ParagraphStyle('Right', fontName=font_name, fontSize=10, leading=15, alignment=TA_RIGHT),
+        'center': ParagraphStyle('Center', fontName=font_name, fontSize=9, leading=12, alignment=TA_CENTER)
     }
     
     elements = []
@@ -127,19 +128,26 @@ def create_pdf(content):
     sig_buffer = []
 
     def flush_signatures():
-        """Helper to render stacked side-by-side signatures when complete."""
+        """Renders signatures at exact absolute X positions (10mm, 48mm, 86mm)."""
         if sig_buffer:
-            elements.append(Spacer(1, 40)) # Handwritten signature space above
-            num_sigs = len(sig_buffer)
-            col_width = (180 / num_sigs) * mm if num_sigs > 0 else 60*mm
+            elements.append(Spacer(1, 25)) # Handwritten signature space above
             
-            sig_table = Table([sig_buffer], colWidths=[col_width]*num_sigs)
+            # Pad array to ensure correct spacing logic
+            row_data = sig_buffer[:]
+            while len(row_data) < 3:
+                row_data.append(Paragraph("", styles['center']))
+            
+            # Using 38mm column widths places exactly at X=10, 48, and 86 (since margin=10)
+            sig_table = Table([row_data], colWidths=[38*mm, 38*mm, 38*mm])
             sig_table.setStyle(TableStyle([
                 ('VALIGN', (0,0), (-1,-1), 'TOP'),
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
             ]))
+            sig_table.hAlign = 'LEFT'
             elements.append(sig_table)
-            elements.append(Spacer(1, 10))
+            elements.append(Spacer(1, 5))
             sig_buffer.clear()
 
     for line in lines:
@@ -159,6 +167,15 @@ def create_pdf(content):
             # Render Table when exiting the markdown table block
             if in_table:
                 if table_data:
+                    # Dynamically match requested A5 table layout width
+                    num_cols = len(table_data[0])
+                    if num_cols == 5:
+                        col_widths = [15*mm, 80*mm, 20*mm, 25*mm, 30*mm]
+                    elif num_cols == 6:
+                        col_widths = [15*mm, 50*mm, 20*mm, 25*mm, 30*mm, 30*mm]
+                    else:
+                        col_widths = None
+
                     table_style = [
                         ('FONTNAME', (0,0), (-1,-1), font_name),
                         ('FONTSIZE', (0,0), (-1,-1), 10),
@@ -167,15 +184,15 @@ def create_pdf(content):
                         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
                         ('PADDING', (0,0), (-1,-1), 4),
                     ]
-                    # Left align the second column (Details/વિગત) if it exists
-                    if len(table_data[0]) > 1:
+                    # Left align the second column (Details/વિગત)
+                    if num_cols > 1:
                         table_style.append(('ALIGN', (1,0), (1,-1), 'LEFT'))
                         
-                    t = Table(table_data)
+                    t = Table(table_data, colWidths=col_widths)
                     t.setStyle(TableStyle(table_style))
                     elements.append(Spacer(1, 5))
                     elements.append(t)
-                    elements.append(Spacer(1, 10))
+                    elements.append(Spacer(1, 5))
                 table_data = []
                 in_table = False
             
@@ -186,29 +203,39 @@ def create_pdf(content):
             
             elif "સાદર નોંધ" in line_stripped:
                 flush_signatures()
-                elements.append(Spacer(1, 5))
                 elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
+                elements.append(Spacer(1, 2))
             
             elif line_stripped.startswith("વિષય:"):
                 flush_signatures()
                 elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
-                elements.append(Spacer(1, 5))
+                elements.append(Spacer(1, 4))
             
             elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]) and not any(r in line_stripped for r in ["આચાર્ય", "ડીનશ્રી"]):
-                # Accumulate the 3 Horizontal Signatures (replaces comma with break tag to stack titles)
-                formatted_sig = line_stripped.replace(",", "<br/>")
+                # Split comma-separated items and join with breaks to stack properly
+                parts = line_stripped.split(",")
+                formatted_sig = "<br/>".join([p.strip() for p in parts])
                 sig_buffer.append(Paragraph(formatted_sig, styles['center']))
                 
             elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
                 # Flush the top level side-by-side signatures before adding Principal
                 flush_signatures()
                 
-                # Left Side Signature (Principal) stacked formatting
+                parts = line_stripped.split(",")
+                formatted_line = "<br/>".join([p.strip() for p in parts])
+                p_para = Paragraph(formatted_line, styles['center'])
+
+                # Places signature explicitly at X=75 with width 55 (matching FPDF offset)
+                p_table = Table([["", p_para]], colWidths=[65*mm, 55*mm])
+                p_table.setStyle(TableStyle([
+                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                    ('ALIGN', (1,0), (1,-1), 'CENTER'),
+                ]))
+                p_table.hAlign = 'LEFT'
+
                 if "આચાર્ય" in line_stripped or "ડીનશ્રી" in line_stripped:
-                    elements.append(Spacer(1, 40)) # Add sign space only before the title
-                
-                formatted_line = line_stripped.replace(",", "<br/>")
-                elements.append(Paragraph(formatted_line, styles['normal']))
+                    elements.append(Spacer(1, 30)) # Signature Space 
+                elements.append(p_table)
             
             else:
                 flush_signatures()
@@ -400,3 +427,4 @@ with tab3:
                 
         if os.path.exists("sample_nondh_uploaded.docx"):
             st.success("✅ Sample DOCX is currently saved and active.")
+
