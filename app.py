@@ -13,7 +13,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from reportlab.lib import colors
 
 # ==========================================
@@ -114,7 +114,8 @@ def create_pdf(content):
     styles = {
         'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=11, leading=18),
         'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=11, leading=18),
-        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=18, alignment=TA_RIGHT)
+        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=18, alignment=TA_RIGHT),
+        'center': ParagraphStyle('Center', fontName=font_name, fontSize=11, leading=15, alignment=TA_CENTER)
     }
     
     elements = []
@@ -122,6 +123,25 @@ def create_pdf(content):
     table_data = []
     in_table = False
     
+    # Buffer to hold horizontal signatures
+    sig_buffer = []
+
+    def flush_signatures():
+        """Helper to render stacked side-by-side signatures when complete."""
+        if sig_buffer:
+            elements.append(Spacer(1, 40)) # Handwritten signature space above
+            num_sigs = len(sig_buffer)
+            col_width = (180 / num_sigs) * mm if num_sigs > 0 else 60*mm
+            
+            sig_table = Table([sig_buffer], colWidths=[col_width]*num_sigs)
+            sig_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ]))
+            elements.append(sig_table)
+            elements.append(Spacer(1, 10))
+            sig_buffer.clear()
+
     for line in lines:
         line_stripped = line.strip()
         
@@ -161,33 +181,44 @@ def create_pdf(content):
             
             # Position Specific Text Blocks
             if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
+                flush_signatures()
                 elements.append(Paragraph(line_stripped, styles['right']))
             
             elif "સાદર નોંધ" in line_stripped:
+                flush_signatures()
                 elements.append(Spacer(1, 5))
                 elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
             
             elif line_stripped.startswith("વિષય:"):
+                flush_signatures()
                 elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
                 elements.append(Spacer(1, 5))
             
-            elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]):
-                # Right Side Signatures: Add 30pt blank space above EACH for handwritten signatures
-                elements.append(Spacer(1, 30))
-                elements.append(Paragraph(line_stripped, styles['right']))
+            elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]) and not any(r in line_stripped for r in ["આચાર્ય", "ડીનશ્રી"]):
+                # Accumulate the 3 Horizontal Signatures (replaces comma with break tag to stack titles)
+                formatted_sig = line_stripped.replace(",", "<br/>")
+                sig_buffer.append(Paragraph(formatted_sig, styles['center']))
                 
             elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
-                # Left Side Signature (Principal)
-                if "આચાર્ય" in line_stripped:
-                    elements.append(Spacer(1, 30)) # Add sign space only before the title
-                elements.append(Paragraph(line_stripped, styles['normal']))
+                # Flush the top level side-by-side signatures before adding Principal
+                flush_signatures()
+                
+                # Left Side Signature (Principal) stacked formatting
+                if "આચાર્ય" in line_stripped or "ડીનશ્રી" in line_stripped:
+                    elements.append(Spacer(1, 40)) # Add sign space only before the title
+                
+                formatted_line = line_stripped.replace(",", "<br/>")
+                elements.append(Paragraph(formatted_line, styles['normal']))
             
             else:
+                flush_signatures()
                 # Normal Body Text
                 elements.append(Paragraph(line_stripped, styles['normal']))
                 elements.append(Spacer(1, 3))
                 
-    # Failsafe if the document ends with a table
+    # Final flush and table failsafe
+    flush_signatures()
+    
     if in_table and table_data:
         t = Table(table_data)
         table_style = [
@@ -266,44 +297,12 @@ with tab1:
 
                     [If multiple items, include a markdown table. Columns MUST be: ક્રમ | વિગત | જથ્થો | કિંમત | કુલ કિંમત]
 
-                    # 1. Data for the first row of 3 signatures
-row_1_signatures = [
-    [
-        "ખેતીવાડી અધિકારી\nકીટકશાસ્ત્ર વિભાગ", 
-        "પ્રોજેકટ ઈન્ચાર્જ\nકીટકશાસ્ત્ર વિભાગ", 
-        "પ્રાધ્યાપક અને વડા\nકીટકશાસ્ત્ર વિભાગ"
-    ]
-]
+                    ખેતીવાડી અધિકારી,કીટકશાસ્ત્ર વિભાગ
+                    પ્રોજેકટ ઈન્ચાર્જ,કીટકશાસ્ત્ર વિભાગ
+                    પ્રાધ્યાપક અને વડા,કીટકશાસ્ત્ર વિભાગ
 
-# Create a 3-column table evenly spaced across the page
-sig_table_1 = Table(row_1_signatures, colWidths=['33%', '34%', '33%'])
-sig_table_1.setStyle(TableStyle([
-    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Center text in each column
-    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ('TOPPADDING', (0, 0), (-1, -1), 60),   # Adds 60 points of blank space ABOVE text for the physical signature
-]))
-
-# 2. Data for the Principal/Dean signature (bottom right)
-row_2_signatures = [
-    [
-        "", # Empty left column
-        "", # Empty middle column
-        "આચાર્ય અને ડીનશ્રી\nન. મ. કૃષિ મહાવિધાયલય\nન.કૃ.યુ. નવસારી" # Right column
-    ]
-]
-
-sig_table_2 = Table(row_2_signatures, colWidths=['33%', '34%', '33%'])
-sig_table_2.setStyle(TableStyle([
-    ('ALIGN', (2, 0), (2, 0), 'CENTER'),    # Center the text in the rightmost column
-    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ('TOPPADDING', (0, 0), (-1, -1), 60),   # Space for the Dean's signature
-]))
-
-# 3. Add these to your document 'Story' (the list of elements to build)
-# story.append(Spacer(1, 40)) # Add some space after your main table
-# story.append(sig_table_1)
-# story.append(Spacer(1, 20)) # Space between the two signature rows
-# story.append(sig_table_2)
+                    આચાર્ય અને ડીનશ્રી, ન. મ. કૃષિ મહાવિધાયલય, ન.કૃ.યુ. નવસારી
+                    """
                     
                     inputs = [sys_prompt, text_prompt]
                     if uploaded_image:
@@ -401,4 +400,3 @@ with tab3:
                 
         if os.path.exists("sample_nondh_uploaded.docx"):
             st.success("✅ Sample DOCX is currently saved and active.")
-
