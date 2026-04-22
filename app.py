@@ -86,7 +86,7 @@ def load_permanent_context():
     return statute_text, sample_text
 
 # ==========================================
-# Document Generation Logic (Half A4 Layout PDF)
+# Document Generation Logic (Perfect Half A4 Layout)
 # ==========================================
 def create_pdf(content):
     # Download Gujarati Font automatically if missing
@@ -108,15 +108,13 @@ def create_pdf(content):
     
     # Half A4 setup (210mm wide x 148.5mm high - A5 Landscape)
     doc = SimpleDocTemplate(bio, pagesize=(210*mm, 148.5*mm),
-                            rightMargin=20*mm, leftMargin=20*mm,
-                            topMargin=15*mm, bottomMargin=15*mm)
+                            rightMargin=15*mm, leftMargin=15*mm,
+                            topMargin=10*mm, bottomMargin=10*mm)
     
     styles = {
-        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=11, leading=16),
-        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=11, leading=16),
-        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=16, alignment=TA_RIGHT),
-        'right_sig': ParagraphStyle('RightSig', fontName=font_name, fontSize=11, leading=16, alignment=TA_RIGHT, spaceBefore=24),
-        'left_sig': ParagraphStyle('LeftSig', fontName=font_name, fontSize=11, leading=16, alignment=TA_LEFT, spaceBefore=24)
+        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=11, leading=18),
+        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=11, leading=18),
+        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=18, alignment=TA_RIGHT)
     }
     
     elements = []
@@ -126,51 +124,83 @@ def create_pdf(content):
     
     for line in lines:
         line_stripped = line.strip()
+        
+        # Skip empty lines to control spacing manually
+        if not line_stripped:
+            continue
+            
         if line_stripped.startswith('|'):
             in_table = True
             row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
-            # Skip Markdown separator line
+            # Skip Markdown separator line (e.g. |---|---|)
             if not all(c == '-' for c in row[0].replace(' ', '')): 
                 table_data.append(row)
         else:
+            # Render Table when exiting the markdown table block
             if in_table:
                 if table_data:
-                    t = Table(table_data)
-                    t.setStyle(TableStyle([
+                    table_style = [
                         ('FONTNAME', (0,0), (-1,-1), font_name),
+                        ('FONTSIZE', (0,0), (-1,-1), 10),
                         ('GRID', (0,0), (-1,-1), 0.5, colors.black),
                         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                        ('PADDING', (0,0), (-1,-1), 3),
-                    ]))
+                        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                        ('PADDING', (0,0), (-1,-1), 4),
+                    ]
+                    # Left align the second column (Details/વિગત) if it exists
+                    if len(table_data[0]) > 1:
+                        table_style.append(('ALIGN', (1,0), (1,-1), 'LEFT'))
+                        
+                    t = Table(table_data)
+                    t.setStyle(TableStyle(table_style))
+                    elements.append(Spacer(1, 5))
                     elements.append(t)
                     elements.append(Spacer(1, 10))
                 table_data = []
                 in_table = False
             
-            if line_stripped:
-                # Align specific elements exactly like the uploaded sample
-                if "તા." in line_stripped and "/" in line_stripped and len(line_stripped) < 20:
-                    elements.append(Paragraph(line_stripped, styles['right']))
-                elif "સ્થળ: નવસારી" in line_stripped:
-                    elements.append(Paragraph(line_stripped, styles['right']))
-                elif "પ્રાધ્યાપક અને વડા" in line_stripped or "ખેતીવાડી અધિકારી" in line_stripped or "પ્રોજેકટ ઈન્ચાર્જ" in line_stripped:
-                    elements.append(Paragraph(line_stripped, styles['right_sig']))
-                elif "આચાર્ય" in line_stripped and "ડીનશ્રી" in line_stripped:
-                    elements.append(Paragraph(line_stripped, styles['left_sig']))
-                elif line_stripped.startswith("વિષય:"):
-                    elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
-                else:
-                    elements.append(Paragraph(line_stripped, styles['normal']))
-                elements.append(Spacer(1, 2))
+            # Position Specific Text Blocks
+            if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
+                elements.append(Paragraph(line_stripped, styles['right']))
+            
+            elif "સાદર નોંધ" in line_stripped:
+                elements.append(Spacer(1, 5))
+                elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
+            
+            elif line_stripped.startswith("વિષય:"):
+                elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
+                elements.append(Spacer(1, 5))
+            
+            elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]):
+                # Right Side Signatures: Add 30pt blank space above EACH for handwritten signatures
+                elements.append(Spacer(1, 30))
+                elements.append(Paragraph(line_stripped, styles['right']))
                 
+            elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
+                # Left Side Signature (Principal)
+                if "આચાર્ય" in line_stripped:
+                    elements.append(Spacer(1, 30)) # Add sign space only before the title
+                elements.append(Paragraph(line_stripped, styles['normal']))
+            
+            else:
+                # Normal Body Text
+                elements.append(Paragraph(line_stripped, styles['normal']))
+                elements.append(Spacer(1, 3))
+                
+    # Failsafe if the document ends with a table
     if in_table and table_data:
         t = Table(table_data)
-        t.setStyle(TableStyle([
+        table_style = [
             ('FONTNAME', (0,0), (-1,-1), font_name),
+            ('FONTSIZE', (0,0), (-1,-1), 10),
             ('GRID', (0,0), (-1,-1), 0.5, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('PADDING', (0,0), (-1,-1), 3),
-        ]))
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('PADDING', (0,0), (-1,-1), 4),
+        ]
+        if len(table_data[0]) > 1:
+            table_style.append(('ALIGN', (1,0), (1,-1), 'LEFT'))
+        t.setStyle(TableStyle(table_style))
         elements.append(t)
 
     doc.build(elements)
@@ -339,3 +369,4 @@ with tab3:
                 
         if os.path.exists("sample_nondh_uploaded.docx"):
             st.success("✅ Sample DOCX is currently saved and active.")
+
