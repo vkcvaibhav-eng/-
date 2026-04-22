@@ -1,0 +1,6 @@
+streamlit
+pandas
+statsmodels
+scipy
+fpdf
+openpyxl
