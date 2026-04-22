@@ -266,12 +266,44 @@ with tab1:
 
                     [If multiple items, include a markdown table. Columns MUST be: ક્રમ | વિગત | જથ્થો | કિંમત | કુલ કિંમત]
 
-                    ખેતીવાડી અધિકારી,કીટકશાસ્ત્ર વિભાગ
-                    પ્રોજેકટ ઈન્ચાર્જ,કીટકશાસ્ત્ર વિભાગ
-                    પ્રાધ્યાપક અને વડા,કીટકશાસ્ત્ર વિભાગ
+                    # 1. Data for the first row of 3 signatures
+row_1_signatures = [
+    [
+        "ખેતીવાડી અધિકારી\nકીટકશાસ્ત્ર વિભાગ", 
+        "પ્રોજેકટ ઈન્ચાર્જ\nકીટકશાસ્ત્ર વિભાગ", 
+        "પ્રાધ્યાપક અને વડા\nકીટકશાસ્ત્ર વિભાગ"
+    ]
+]
 
-                    આચાર્ય અને ડીનશ્રી, ન. મ. કૃષિ મહાવિધાયલય, ન.કૃ.યુ. નવસારી
-                    """
+# Create a 3-column table evenly spaced across the page
+sig_table_1 = Table(row_1_signatures, colWidths=['33%', '34%', '33%'])
+sig_table_1.setStyle(TableStyle([
+    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Center text in each column
+    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ('TOPPADDING', (0, 0), (-1, -1), 60),   # Adds 60 points of blank space ABOVE text for the physical signature
+]))
+
+# 2. Data for the Principal/Dean signature (bottom right)
+row_2_signatures = [
+    [
+        "", # Empty left column
+        "", # Empty middle column
+        "આચાર્ય અને ડીનશ્રી\nન. મ. કૃષિ મહાવિધાયલય\nન.કૃ.યુ. નવસારી" # Right column
+    ]
+]
+
+sig_table_2 = Table(row_2_signatures, colWidths=['33%', '34%', '33%'])
+sig_table_2.setStyle(TableStyle([
+    ('ALIGN', (2, 0), (2, 0), 'CENTER'),    # Center the text in the rightmost column
+    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ('TOPPADDING', (0, 0), (-1, -1), 60),   # Space for the Dean's signature
+]))
+
+# 3. Add these to your document 'Story' (the list of elements to build)
+# story.append(Spacer(1, 40)) # Add some space after your main table
+# story.append(sig_table_1)
+# story.append(Spacer(1, 20)) # Space between the two signature rows
+# story.append(sig_table_2)
                     
                     inputs = [sys_prompt, text_prompt]
                     if uploaded_image:
