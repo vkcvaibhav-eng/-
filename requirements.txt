@@ -1,6 +1,4 @@
 streamlit
-pandas
-statsmodels
-scipy
-fpdf
-openpyxl
+google-generativeai
+python-docx
+pillow
