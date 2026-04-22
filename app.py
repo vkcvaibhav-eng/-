@@ -132,7 +132,7 @@ with tab1:
             with st.spinner("તમારી માહિતી સમજવામાં અને નોંધ તૈયાર કરવામાં આવી રહી છે..."):
                 try:
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('Gemini 3.1 Flash TTS Preview')
+                    model = genai.GenerativeModel('gemini-3-pro-preview')
                     
                     # Core context integrated from standard department layouts and Statute 121
                     sys_prompt = f"""
