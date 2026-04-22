@@ -60,27 +60,25 @@ def load_permanent_context():
     sample_text = "Sample Nondh Format:\n"
     
     # Read Statute PDF
-    if os.path.exists("121 Statutes.pdf"):
+    if os.path.exists("121_Statutes_uploaded.pdf"):
         try:
-            with open("121 Statutes.pdf", "rb") as f:
+            with open("121_Statutes_uploaded.pdf", "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 for page in reader.pages:
                     statute_text += page.extract_text() + "\n"
         except Exception as e:
-            st.warning(f"Could not load 121 Statutes.pdf: {e}")
+            st.warning(f"Could not load 121 Statutes PDF: {e}")
 
     # Read Sample DOCX
-    if os.path.exists("sample_nondh.docx"):
+    if os.path.exists("sample_nondh_uploaded.docx"):
         try:
-            doc = DocxReader("sample_nondh.docx")
+            doc = DocxReader("sample_nondh_uploaded.docx")
             for para in doc.paragraphs:
                 sample_text += para.text + "\n"
         except Exception as e:
-            st.warning(f"Could not load sample_nondh.docx: {e}")
+            st.warning(f"Could not load sample_nondh DOCX: {e}")
             
     return statute_text, sample_text
-
-statute_context, sample_context = load_permanent_context()
 
 # ==========================================
 # Document Generation Logic (Half A4 Layout)
@@ -88,12 +86,10 @@ statute_context, sample_context = load_permanent_context()
 def create_docx(content):
     doc = Document()
     
-    # Set page size to A4
     section = doc.sections[0]
     section.page_width = Mm(210)
     section.page_height = Mm(297)
     
-    # Adjust margins to fit well in the top half of the page
     section.top_margin = Mm(15)
     section.bottom_margin = Mm(15)
     section.left_margin = Mm(20)
@@ -124,19 +120,18 @@ def create_docx(content):
             
             if line_stripped:
                 p = doc.add_paragraph(line_stripped)
-                p.paragraph_format.space_after = Pt(2) # Tight spacing like the original
+                p.paragraph_format.space_after = Pt(2)
                 
-                # Align specific elements exactly like the uploaded sample
                 if "તા." in line_stripped and "/" in line_stripped and len(line_stripped) < 20:
                     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 elif "સ્થળ: નવસારી" in line_stripped:
                     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 elif "પ્રાધ્યાપક અને વડા" in line_stripped or "ખેતીવાડી અધિકારી" in line_stripped or "પ્રોજેકટ ઈન્ચાર્જ" in line_stripped:
                     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    p.paragraph_format.space_before = Pt(24) # Space for signature
+                    p.paragraph_format.space_before = Pt(24) 
                 elif "આચાર્ય" in line_stripped and "ડીનશ્રી" in line_stripped:
                     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    p.paragraph_format.space_before = Pt(24) # Space for signature
+                    p.paragraph_format.space_before = Pt(24) 
                 elif line_stripped.startswith("વિષય:"):
                     p.runs[0].bold = True
                 
@@ -160,7 +155,7 @@ st.title("સાદર નોંધ જનરેટર (Intelligent Sadar Nondh 
 
 api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
-tab1, tab2 = st.tabs(["નવી સાદર નોંધ બનાવો (Create New)", "જુની નોંધ (Archives)"])
+tab1, tab2, tab3 = st.tabs(["નવી સાદર નોંધ બનાવો (Create New)", "જુની નોંધ (Archives)", "સેટિંગ્સ (Settings / Files)"])
 
 with tab1:
     st.markdown("### જરૂરિયાતની વિગત આપો (Provide Requirements)")
@@ -175,13 +170,17 @@ with tab1:
     if st.button("જનરેટ કરો (Generate)"):
         if not api_key:
             st.error("Please enter your Gemini API Key in the sidebar.")
+        elif not os.path.exists("121_Statutes_uploaded.pdf") or not os.path.exists("sample_nondh_uploaded.docx"):
+             st.warning("Please upload the Statute PDF and Sample DOCX in the 'સેટિંગ્સ (Settings)' tab first.")
         elif not text_prompt and not uploaded_image:
             st.warning("Please provide either a text requirement or an image.")
         else:
             with st.spinner("સ્ટેચ્યુટ ૧૨૧ ની ચકાસણી અને નોંધ તૈયાર કરવામાં આવી રહી છે..."):
                 try:
+                    statute_context, sample_context = load_permanent_context()
+                    
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-3.1-pro-preview')
+                    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
                     
                     sys_prompt = f"""
                     You are an expert administrative AI for the Department of Entomology, N. M. College of Agriculture, NAU, Navsari.
@@ -193,7 +192,7 @@ with tab1:
                     If the user does not provide a detailed reason, logically invent a highly relevant academic/research justification suitable for the AINP on Agril Acarology project (Budget Head 303/2092).
                     
                     [CONTEXT START]
-                    {statute_context[:15000]} # Limiting to avoid token overflow, ensures main delegation rules are read
+                    {statute_context[:15000]}
                     
                     {sample_context}
                     [CONTEXT END]
@@ -282,3 +281,32 @@ with tab2:
         else:
             st.info("કોઈ રેકોર્ડ મળેલ નથી (No records found for this period).")
 
+with tab3:
+    st.markdown("### કાયમી ફાઇલો અપલોડ કરો (Upload Permanent Reference Files)")
+    st.info("અહીં એકવાર અપલોડ કરેલી ફાઇલો એપમાં સેવ થઈ જશે અને દર વખતે નવી નોંધ બનાવતી વખતે બેકગ્રાઉન્ડમાં ઉપયોગમાં લેવાશે.")
+    
+    col_pdf, col_docx = st.columns(2)
+    
+    with col_pdf:
+        statute_file = st.file_uploader("સ્ટેચ્યુટ પીડીએફ (Statute 121 PDF):", type=["pdf"])
+        if statute_file:
+            if st.button("Save Statute PDF"):
+                with open("121_Statutes_uploaded.pdf", "wb") as f:
+                    f.write(statute_file.getbuffer())
+                load_permanent_context.clear() # Clear cache to refresh context
+                st.success("Statute PDF saved permanently!")
+        
+        if os.path.exists("121_Statutes_uploaded.pdf"):
+            st.success("✅ Statute PDF is currently saved and active.")
+
+    with col_docx:
+        sample_file = st.file_uploader("નમૂનાની વર્ડ ફાઇલ (Sample Nondh DOCX):", type=["docx"])
+        if sample_file:
+            if st.button("Save Sample DOCX"):
+                with open("sample_nondh_uploaded.docx", "wb") as f:
+                    f.write(sample_file.getbuffer())
+                load_permanent_context.clear() # Clear cache to refresh context
+                st.success("Sample DOCX saved permanently!")
+                
+        if os.path.exists("sample_nondh_uploaded.docx"):
+            st.success("✅ Sample DOCX is currently saved and active.")
