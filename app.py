@@ -1,12 +1,15 @@
 import streamlit as st
 import google.generativeai as genai
 from docx import Document
-from docx.shared import Mm, Pt
+from docx.shared import Mm, Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import sqlite3
 import datetime
 from PIL import Image
 import io
+import os
+import PyPDF2
+from docx import Document as DocxReader
 
 # ==========================================
 # Database Setup for Archiving
@@ -49,7 +52,38 @@ def get_archives(month, year):
 init_db()
 
 # ==========================================
-# Document Generation Logic (A4 Layout)
+# Permanent Attachments Extraction
+# ==========================================
+@st.cache_data
+def load_permanent_context():
+    statute_text = "Statute 121 Rules:\n"
+    sample_text = "Sample Nondh Format:\n"
+    
+    # Read Statute PDF
+    if os.path.exists("121 Statutes.pdf"):
+        try:
+            with open("121 Statutes.pdf", "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    statute_text += page.extract_text() + "\n"
+        except Exception as e:
+            st.warning(f"Could not load 121 Statutes.pdf: {e}")
+
+    # Read Sample DOCX
+    if os.path.exists("sample_nondh.docx"):
+        try:
+            doc = DocxReader("sample_nondh.docx")
+            for para in doc.paragraphs:
+                sample_text += para.text + "\n"
+        except Exception as e:
+            st.warning(f"Could not load sample_nondh.docx: {e}")
+            
+    return statute_text, sample_text
+
+statute_context, sample_context = load_permanent_context()
+
+# ==========================================
+# Document Generation Logic (Half A4 Layout)
 # ==========================================
 def create_docx(content):
     doc = Document()
@@ -58,6 +92,12 @@ def create_docx(content):
     section = doc.sections[0]
     section.page_width = Mm(210)
     section.page_height = Mm(297)
+    
+    # Adjust margins to fit well in the top half of the page
+    section.top_margin = Mm(15)
+    section.bottom_margin = Mm(15)
+    section.left_margin = Mm(20)
+    section.right_margin = Mm(20)
     
     lines = content.split('\n')
     table_data = []
@@ -68,12 +108,10 @@ def create_docx(content):
         if line_stripped.startswith('|'):
             in_table = True
             row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
-            # Skip markdown separator row (e.g., |---|---|)
             if not all(c == '-' for c in row[0].replace(' ', '')): 
                 table_data.append(row)
         else:
             if in_table:
-                # Render table when exiting table block
                 if table_data:
                     table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
                     table.style = 'Table Grid'
@@ -85,12 +123,23 @@ def create_docx(content):
                 in_table = False
             
             if line_stripped:
-                # Special alignment for signature blocks at the bottom
                 p = doc.add_paragraph(line_stripped)
-                if "પ્રાધ્યાપક અને વડા" in line_stripped or "આચાર્ય" in line_stripped:
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                p.paragraph_format.space_after = Pt(2) # Tight spacing like the original
                 
-    # Catch any remaining table at the end
+                # Align specific elements exactly like the uploaded sample
+                if "તા." in line_stripped and "/" in line_stripped and len(line_stripped) < 20:
+                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                elif "સ્થળ: નવસારી" in line_stripped:
+                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                elif "પ્રાધ્યાપક અને વડા" in line_stripped or "ખેતીવાડી અધિકારી" in line_stripped or "પ્રોજેકટ ઈન્ચાર્જ" in line_stripped:
+                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    p.paragraph_format.space_before = Pt(24) # Space for signature
+                elif "આચાર્ય" in line_stripped and "ડીનશ્રી" in line_stripped:
+                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    p.paragraph_format.space_before = Pt(24) # Space for signature
+                elif line_stripped.startswith("વિષય:"):
+                    p.runs[0].bold = True
+                
     if in_table and table_data:
         table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
         table.style = 'Table Grid'
@@ -129,38 +178,41 @@ with tab1:
         elif not text_prompt and not uploaded_image:
             st.warning("Please provide either a text requirement or an image.")
         else:
-            with st.spinner("તમારી માહિતી સમજવામાં અને નોંધ તૈયાર કરવામાં આવી રહી છે..."):
+            with st.spinner("સ્ટેચ્યુટ ૧૨૧ ની ચકાસણી અને નોંધ તૈયાર કરવામાં આવી રહી છે..."):
                 try:
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-3-pro-preview')
+                    model = genai.GenerativeModel('gemini-3.1-pro-preview')
                     
-                    # Core context integrated from standard department layouts and Statute 121
                     sys_prompt = f"""
                     You are an expert administrative AI for the Department of Entomology, N. M. College of Agriculture, NAU, Navsari.
                     Your task is to generate a formal 'સાદર નોંધ' in Gujarati based on the user's brief input or image. 
-                    If the user does not provide a detailed reason for the purchase, logically invent a highly relevant academic/research justification suitable for the AINP on Agricultural Acarology project or general Entomology department needs.
                     
-                    Statute 121 Rules to strictly apply based on context:
-                    - 45 (iii) (iii): Consumables, petty stores, stationery, miscellaneous office expenses, printing.
-                    - 54 (i): Seeds, chemicals, insecticides, fertilizers, farm inputs, lab chemicals.
-                    - 41 (iii) (iii) / 41 (iv): Computer hardware, accessories, electronics, printers.
-                    - 48 (ii) (i): Repairs and maintenance of equipment.
-                    - 63 (iii) (iii): Printing, charts, publications, booklets.
-                    - 45-A (New) (iii) (iii): Electricity, diesel/fuel, honorarium, TA/DA, seminar expenses.
+                    CRITICAL INSTRUCTION: You MUST read the provided 'Statute 121 Rules' below and select the exact correct Item Number for the requested items.
+                    CRITICAL INSTRUCTION: You MUST format the output EXACTLY matching the 'Sample Nondh Format' provided below. Do not add any conversational text.
+                    
+                    If the user does not provide a detailed reason, logically invent a highly relevant academic/research justification suitable for the AINP on Agril Acarology project (Budget Head 303/2092).
+                    
+                    [CONTEXT START]
+                    {statute_context[:15000]} # Limiting to avoid token overflow, ensures main delegation rules are read
+                    
+                    {sample_context}
+                    [CONTEXT END]
 
                     Format REQUIRED:
                     તા. {datetime.date.today().strftime('%d/%m/%Y')}
                     સ્થળ: નવસારી
                     સાદર નોંધ:
-                    વિષય: [Appropriate Subject]
-                    સવિનય ઉપરોક્ત વિષય અન્વયે જણાવવાનું કે, અત્રેના કિટકશાસ્ત્ર વિભાગમાં [Detailed logical reason]. સદર વસ્તુનો કુલ અંદાજિત ખર્ચ [Total Amount] થનાર છે.
-                    સદર ખર્ચની ખરીદી કરવા આપશ્રીની સતા અન્વયે સ્ટેચ્યુટ ૧૨૧ની આઈટમ નંબર [Insert Correct Item No. from rules above] મુજબ સૈદ્ધાંતિક મંજુરી આપવા આપ સાહેબશ્રીને નમ્ર વિનંતી છે.
-                    સદર ખર્ચ અત્રેના વિભાગમાં ચાલતી આઈ.સી.એ.આર. યોજના (બ.સ. ૩૦૩/૨૦૯૨) માં કરવામાં આવશે.
+                    વિષય: [Appropriate Subject...]
+                    સવિનય ઉપરોક્ત વિષય અન્વયે જણાવવાનું કે, અત્રેનાં કીટકશાસ્ત્ર વિભાગની આઈ.સી.એ.આર. યોજના AINP on Agril Acarology બ.સ. ૩૦૩/૨૦૯૨ અંતર્ગત [Detailed logical reason]. સદર વસ્તુનો કુલ અંદાજિત ખર્ચ [Total Amount] થનાર છે.
+                    જે આપ સાહેબશ્રીને સ્ટેચ્યુટ ૧૨૧ની આઈટમ નંબર [Insert Correct Item No. from Statute] મુજબ એનાયત થયેલ સત્તા અનુસાર સૈદ્ધાંતિક મંજુરી આપવા વિનંતી. સદર ખર્ચ અત્રેના વિભાગમાં ચાલતી આઈ.સી.એ.આર યોજના (બ.સ. ૩૦૩/૨૦૯૨) માં કરવામાં આવશે.
 
                     [If multiple items, include a markdown table. Columns MUST be: ક્રમ | વિગત | જથ્થો | કિંમત | કુલ કિંમત]
 
-                    પ્રાધ્યાપક અને વડા, કિટકશાસ્ત્ર વિભાગ
-                    આચાર્યશ્રી, ન.મ.કૃ.મ., નકૃયુ, નવસારી
+                    ખેતીવાડી અધિકારી,કીટકશાસ્ત્ર વિભાગ
+                    પ્રોજેકટ ઈન્ચાર્જ,કીટકશાસ્ત્ર વિભાગ
+                    પ્રાધ્યાપક અને વડા,કીટકશાસ્ત્ર વિભાગ
+
+                    આચાર્ય અને ડીનશ્રી, ન. મ. કૃષિ મહાવિધાયલય, ન.કૃ.યુ. નવસારી
                     """
                     
                     inputs = [sys_prompt, text_prompt]
@@ -185,7 +237,6 @@ with tab1:
         col_save, col_down = st.columns(2)
         with col_save:
             if st.button("આર્કાઇવમાં સેવ કરો (Save & Approve)"):
-                # Extract subject line automatically for database indexing
                 subject_line = "No Subject"
                 for line in edited_text.split('\n'):
                     if "વિષય:" in line:
@@ -196,7 +247,7 @@ with tab1:
                 
         with col_down:
             docx_data = create_docx(edited_text)
-            st.download_button(label="Download as Word Document (A4)",
+            st.download_button(label="Download as Word Document",
                                data=docx_data,
                                file_name=f"Sadar_Nondh_{datetime.date.today().strftime('%d_%m_%Y')}.docx",
                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -222,7 +273,6 @@ with tab2:
                 with st.expander(f"{date} - {subject}"):
                     st.text(content)
                     
-                    # Generate a unique download button for archived files
                     archived_docx = create_docx(content)
                     st.download_button(label="Download this Document",
                                        data=archived_docx,
@@ -231,3 +281,4 @@ with tab2:
                                        key=f"dl_{idx}")
         else:
             st.info("કોઈ રેકોર્ડ મળેલ નથી (No records found for this period).")
+
