@@ -1,8 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from docx import Document
-from docx.shared import Mm, Pt, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 import sqlite3
 import datetime
 from PIL import Image
@@ -10,6 +7,14 @@ import io
 import os
 import PyPDF2
 from docx import Document as DocxReader
+import urllib.request
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+from reportlab.lib import colors
 
 # ==========================================
 # Database Setup for Archiving
@@ -81,20 +86,40 @@ def load_permanent_context():
     return statute_text, sample_text
 
 # ==========================================
-# Document Generation Logic (Half A4 Layout)
+# Document Generation Logic (Half A4 Layout PDF)
 # ==========================================
-def create_docx(content):
-    doc = Document()
+def create_pdf(content):
+    # Download Gujarati Font automatically if missing
+    font_path = "NotoSansGujarati-Regular.ttf"
+    if not os.path.exists(font_path):
+        try:
+            url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Regular.ttf"
+            urllib.request.urlretrieve(url, font_path)
+        except Exception as e:
+            pass # Failsafe
+            
+    try:
+        pdfmetrics.registerFont(TTFont('Gujarati', font_path))
+        font_name = 'Gujarati'
+    except:
+        font_name = 'Helvetica' # Fallback if font fails
+
+    bio = io.BytesIO()
     
-    section = doc.sections[0]
-    section.page_width = Mm(210)
-    section.page_height = Mm(297)
+    # Half A4 setup (210mm wide x 148.5mm high - A5 Landscape)
+    doc = SimpleDocTemplate(bio, pagesize=(210*mm, 148.5*mm),
+                            rightMargin=20*mm, leftMargin=20*mm,
+                            topMargin=15*mm, bottomMargin=15*mm)
     
-    section.top_margin = Mm(15)
-    section.bottom_margin = Mm(15)
-    section.left_margin = Mm(20)
-    section.right_margin = Mm(20)
+    styles = {
+        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=11, leading=16),
+        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=11, leading=16),
+        'right': ParagraphStyle('Right', fontName=font_name, fontSize=11, leading=16, alignment=TA_RIGHT),
+        'right_sig': ParagraphStyle('RightSig', fontName=font_name, fontSize=11, leading=16, alignment=TA_RIGHT, spaceBefore=24),
+        'left_sig': ParagraphStyle('LeftSig', fontName=font_name, fontSize=11, leading=16, alignment=TA_LEFT, spaceBefore=24)
+    }
     
+    elements = []
     lines = content.split('\n')
     table_data = []
     in_table = False
@@ -104,47 +129,51 @@ def create_docx(content):
         if line_stripped.startswith('|'):
             in_table = True
             row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
+            # Skip Markdown separator line
             if not all(c == '-' for c in row[0].replace(' ', '')): 
                 table_data.append(row)
         else:
             if in_table:
                 if table_data:
-                    table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-                    table.style = 'Table Grid'
-                    for i, row in enumerate(table_data):
-                        for j, cell in enumerate(row):
-                            if j < len(table.columns):
-                                table.cell(i, j).text = cell
+                    t = Table(table_data)
+                    t.setStyle(TableStyle([
+                        ('FONTNAME', (0,0), (-1,-1), font_name),
+                        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+                        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                        ('PADDING', (0,0), (-1,-1), 3),
+                    ]))
+                    elements.append(t)
+                    elements.append(Spacer(1, 10))
                 table_data = []
                 in_table = False
             
             if line_stripped:
-                p = doc.add_paragraph(line_stripped)
-                p.paragraph_format.space_after = Pt(2)
-                
+                # Align specific elements exactly like the uploaded sample
                 if "તા." in line_stripped and "/" in line_stripped and len(line_stripped) < 20:
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    elements.append(Paragraph(line_stripped, styles['right']))
                 elif "સ્થળ: નવસારી" in line_stripped:
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                    elements.append(Paragraph(line_stripped, styles['right']))
                 elif "પ્રાધ્યાપક અને વડા" in line_stripped or "ખેતીવાડી અધિકારી" in line_stripped or "પ્રોજેકટ ઈન્ચાર્જ" in line_stripped:
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    p.paragraph_format.space_before = Pt(24) 
+                    elements.append(Paragraph(line_stripped, styles['right_sig']))
                 elif "આચાર્ય" in line_stripped and "ડીનશ્રી" in line_stripped:
-                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    p.paragraph_format.space_before = Pt(24) 
+                    elements.append(Paragraph(line_stripped, styles['left_sig']))
                 elif line_stripped.startswith("વિષય:"):
-                    p.runs[0].bold = True
+                    elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
+                else:
+                    elements.append(Paragraph(line_stripped, styles['normal']))
+                elements.append(Spacer(1, 2))
                 
     if in_table and table_data:
-        table = doc.add_table(rows=len(table_data), cols=len(table_data[0]))
-        table.style = 'Table Grid'
-        for i, row in enumerate(table_data):
-            for j, cell in enumerate(row):
-                if j < len(table.columns):
-                    table.cell(i, j).text = cell
+        t = Table(table_data)
+        t.setStyle(TableStyle([
+            ('FONTNAME', (0,0), (-1,-1), font_name),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('PADDING', (0,0), (-1,-1), 3),
+        ]))
+        elements.append(t)
 
-    bio = io.BytesIO()
-    doc.save(bio)
+    doc.build(elements)
     return bio.getvalue()
 
 # ==========================================
@@ -245,11 +274,11 @@ with tab1:
                 st.success("નોંધ ડેટાબેઝમાં સાચવી લેવામાં આવી છે!")
                 
         with col_down:
-            docx_data = create_docx(edited_text)
-            st.download_button(label="Download as Word Document",
-                               data=docx_data,
-                               file_name=f"Sadar_Nondh_{datetime.date.today().strftime('%d_%m_%Y')}.docx",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            pdf_data = create_pdf(edited_text)
+            st.download_button(label="Download as PDF",
+                               data=pdf_data,
+                               file_name=f"Sadar_Nondh_{datetime.date.today().strftime('%d_%m_%Y')}.pdf",
+                               mime="application/pdf")
 
 with tab2:
     st.markdown("### જુની નોંધ શોધો (Search Archives)")
@@ -272,11 +301,11 @@ with tab2:
                 with st.expander(f"{date} - {subject}"):
                     st.text(content)
                     
-                    archived_docx = create_docx(content)
-                    st.download_button(label="Download this Document",
-                                       data=archived_docx,
-                                       file_name=f"Archive_{date.replace('/', '_')}.docx",
-                                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    archived_pdf = create_pdf(content)
+                    st.download_button(label="Download this Document (PDF)",
+                                       data=archived_pdf,
+                                       file_name=f"Archive_{date.replace('/', '_')}.pdf",
+                                       mime="application/pdf",
                                        key=f"dl_{idx}")
         else:
             st.info("કોઈ રેકોર્ડ મળેલ નથી (No records found for this period).")
