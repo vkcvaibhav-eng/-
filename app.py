@@ -8,13 +8,6 @@ import os
 import PyPDF2
 from docx import Document as DocxReader
 import urllib.request
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
-from reportlab.lib import colors
 
 # New Imports for DOCX Generation
 from docx import Document
@@ -89,19 +82,24 @@ def load_permanent_context():
     return statute_text, sample_text
 
 # ==========================================
-# Document Generation Logic (Word / DOCX)
+# Document Generation Logic (Word / DOCX) 
+# Layout: 40% Left Margin, 60% Content
 # ==========================================
 def create_docx(content):
     doc = Document()
     
-    # Half A4 (A5 Landscape) Page Setup (210mm x 148.5mm) for exact PDF look
+    # Half A4 (A5 Landscape) Page Setup (210mm x 148.5mm)
     section = doc.sections[0]
     section.page_width = Mm(210)
     section.page_height = Mm(148.5)
-    section.left_margin = Mm(12)
+    
+    # 40% of 210mm is 84mm. We set the left margin to 84mm to push text to the right 60%.
+    section.left_margin = Mm(84) 
     section.right_margin = Mm(12)
     section.top_margin = Mm(12)
     section.bottom_margin = Mm(12)
+    
+    # Remaining usable width = 210 - 84 - 12 = 114mm
 
     # Set Default Font 
     style = doc.styles['Normal']
@@ -115,23 +113,21 @@ def create_docx(content):
     sig_buffer = []
 
     def flush_signatures():
-        """Renders 3 side-by-side signatures using an invisible table"""
+        """Renders 3 side-by-side signatures using an invisible table fitting the 114mm width"""
         if sig_buffer:
-            # Space for hand signatures
-            doc.add_paragraph().paragraph_format.space_before = Pt(30)
+            doc.add_paragraph().paragraph_format.space_before = Pt(20)
             
-            # Invisible Table for perfect side-by-side alignment
             sig_table = doc.add_table(rows=1, cols=3)
             sig_table.autofit = False
-            for cell in sig_table.columns[0].cells: cell.width = Mm(60)
-            for cell in sig_table.columns[1].cells: cell.width = Mm(60)
-            for cell in sig_table.columns[2].cells: cell.width = Mm(60)
+            # 114mm total width / 3 columns = 38mm each
+            for cell in sig_table.columns[0].cells: cell.width = Mm(38)
+            for cell in sig_table.columns[1].cells: cell.width = Mm(38)
+            for cell in sig_table.columns[2].cells: cell.width = Mm(38)
 
             for i, sig in enumerate(sig_buffer):
                 if i < 3:
                     p = sig_table.cell(0, i).paragraphs[0]
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    # Reformat comma separation to new lines
                     parts = sig.split(',')
                     for j, part in enumerate(parts):
                         run = p.add_run(part.strip())
@@ -145,11 +141,9 @@ def create_docx(content):
         if not line_stripped:
             continue
 
-        # Markdown Table Parsing
         if line_stripped.startswith('|'):
             in_table = True
             row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
-            # Ignore markdown header separators (---)
             if not all(c == '-' for c in row[0].replace(' ', '')):
                 table_data.append(row)
         else:
@@ -166,16 +160,14 @@ def create_docx(content):
                             p = cell.paragraphs[0]
                             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             
-                            # Bold headers
                             if row_idx == 0:
                                 for run in p.runs:
                                     run.bold = True
                     
-                    doc.add_paragraph() # Add space after table
+                    doc.add_paragraph()
                 table_data = []
                 in_table = False
 
-            # Detect and Align Content
             if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
                 flush_signatures()
                 p = doc.add_paragraph(line_stripped)
@@ -192,21 +184,18 @@ def create_docx(content):
                 p = doc.add_paragraph()
                 p.add_run(line_stripped).bold = True
             
-            # Identify first 3 signatures
             elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]) and not any(r in line_stripped for r in ["આચાર્ય", "ડીનશ્રી"]):
                 sig_buffer.append(line_stripped)
             
-            # Align Principal/Acharya signature dynamically
             elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
                 flush_signatures()
                 
-                # Space for handwriting
-                doc.add_paragraph().paragraph_format.space_before = Pt(40)
+                doc.add_paragraph().paragraph_format.space_before = Pt(30)
                 
-                # Invisible table to force signature to the right-side
+                # Principal signature forced to the right of the 114mm content block
                 p_table = doc.add_table(rows=1, cols=2)
-                p_table.columns[0].width = Mm(110) # Spacer column
-                p_table.columns[1].width = Mm(75)  # Signature column
+                p_table.columns[0].width = Mm(40) # Spacer column
+                p_table.columns[1].width = Mm(74)  # Signature column
                 
                 parts = line_stripped.split(",")
                 formatted_line = "\n".join([p.strip() for p in parts])
@@ -221,7 +210,6 @@ def create_docx(content):
 
     flush_signatures()
     
-    # Catch any remaining table data
     if in_table and table_data:
         num_cols = len(table_data[0])
         table = doc.add_table(rows=len(table_data), cols=num_cols)
@@ -313,10 +301,22 @@ with tab1:
                     st.error(f"Error generating document: {e}")
 
     if 'generated_nondh' in st.session_state:
-        st.markdown("### ડ્રાફ્ટ (Draft Review)")
-        edited_text = st.text_area("તમે અહીં સુધારા-વધારા કરી શકો છો (Edit if required):", 
-                                   st.session_state['generated_nondh'], height=350)
+        st.markdown("---")
+        st.markdown("### ડ્રાફ્ટ એડિટિંગ અને પ્રીવ્યુ (Draft Editing & Live Preview)")
+        st.info("નોંધ: ઉપરના ખાનામાં ટેક્સ્ટ/માર્કડાઉન બદલો. નીચેના ભાગમાં તે આપોઆપ 40/60 લેઆઉટમાં ટેબલ સાથે દેખાશે.")
         
+        # Text editor for raw markdown
+        edited_text = st.text_area("અહીં ડ્રાફ્ટમાં સુધારા-વધારા કરો (Edit Raw Text / Table):", 
+                                   st.session_state['generated_nondh'], height=250)
+        
+        # Live Visual Preview split into 40% space and 60% content to match the Word Doc
+        st.markdown("#### દસ્તાવેજ પ્રીવ્યુ (Visual Preview)")
+        with st.container(border=True):
+            prev_col1, prev_col2 = st.columns([4, 6]) # 40% blank left, 60% content right
+            with prev_col2:
+                st.markdown(edited_text) # This natively renders the Markdown Table beautifully
+        
+        st.markdown("---")
         col_save, col_down = st.columns(2)
         with col_save:
             if st.button("આર્કાઇવમાં સેવ કરો (Save & Approve)"):
@@ -354,7 +354,10 @@ with tab2:
             for idx, record in enumerate(records):
                 date, subject, content = record
                 with st.expander(f"{date} - {subject}"):
-                    st.text(content)
+                    # Show preview in archive as well using the 40/60 split
+                    arc_col1, arc_col2 = st.columns([4, 6])
+                    with arc_col2:
+                        st.markdown(content)
                     
                     archived_docx = create_docx(content)
                     st.download_button(label="Download this Document (Word)",
