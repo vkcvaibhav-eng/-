@@ -2,8 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 import sqlite3
 import datetime
-from PIL import Image
-import io
 import os
 import PyPDF2
 from docx import Document as DocxReader
@@ -64,6 +62,226 @@ def load_permanent_context():
                 reader = PyPDF2.PdfReader(f)
                 for page in reader.pages:
                     statute_text += page.extract_text() + "\n"
+        except Exception as e:
+            st.warning(f"Could not load 121 Statutes PDF: {e}")
+
+    if os.path.exists("sample_nondh_uploaded.docx"):
+        try:
+            doc = DocxReader("sample_nondh_uploaded.docx")
+            for para in doc.paragraphs:
+                sample_text += para.text + "\n"
+        except Exception as e:
+            st.warning(f"Could not load sample_nondh DOCX: {e}")
+            
+    return statute_text, sample_text
+
+# ==========================================
+# Document Generation Logic (FPDF2 Engine)
+# ==========================================
+def create_pdf(content):
+    font_path_regular = "NotoSansGujarati-Regular.ttf"
+    font_path_bold = "NotoSansGujarati-Bold.ttf"
+    
+    # Download Fonts if missing
+    if not os.path.exists(font_path_regular):
+        try:
+            url_reg = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Regular.ttf"
+            urllib.request.urlretrieve(url_reg, font_path_regular)
+        except Exception:
+            pass
+
+    if not os.path.exists(font_path_bold):
+        try:
+            url_bold = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Bold.ttf"
+            urllib.request.urlretrieve(url_bold, font_path_bold)
+        except Exception:
+            pass
+            
+    # Setup A5 Portrait (148.5 x 210 mm)
+    pdf = FPDF(orientation="P", unit="mm", format="A5")
+    pdf.set_margins(10, 10, 10)
+    pdf.add_page()
+    
+    # Load Fonts safely
+    try:
+        pdf.add_font("Gujarati", style="", fname=font_path_regular)
+    except Exception:
+        pass
+        
+    has_bold = False
+    if os.path.exists(font_path_bold):
+        try:
+            pdf.add_font("Gujarati", style="B", fname=font_path_bold)
+            has_bold = True
+        except Exception:
+            pass
+            
+    pdf.set_font("Gujarati", size=10)
+    
+    # Enable Text Shaping for proper Gujarati rendering
+    try:
+        pdf.set_text_shaping(True)
+    except Exception:
+        pass 
+
+    lines = content.split('\n')
+    table_data = []
+    in_table = False
+    
+    sig_roles_top = []
+    sig_role_bottom = []
+
+    def render_buffered_table():
+        if not table_data:
+            return
+        pdf.ln(3)
+        max_cols = max(len(r) for r in table_data)
+        
+        # Pad rows to prevent FPDFException
+        for r in table_data:
+            while len(r) < max_cols:
+                r.append("")
+                
+        # Set specific A5 Portrait column widths if it's a 6-column table
+        c_widths = (8, 45, 12, 18, 20, 18) if max_cols == 6 else None
+        
+        with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7, first_row_as_headings=has_bold) as table:
+            for row_idx, row_text in enumerate(table_data):
+                row = table.row()
+                for c_idx, cell_text in enumerate(row_text):
+                    # Align the 2nd column (Items/Details) to Left, others Center
+                    # Align the total row (if it contains 'કુલ રકમ') to Right for specific cells
+                    align_style = "C"
+                    if c_idx == 1:
+                        align_style = "L"
+                    if "કુલ" in cell_text or "Total" in cell_text:
+                        align_style = "R"
+                    row.cell(cell_text, align=align_style)
+        pdf.ln(5)
+
+    for line in lines:
+        line_stripped = line.strip()
+        
+        if not line_stripped:
+            continue
+            
+        # --- Table Parsing ---
+        if line_stripped.startswith('|'):
+            in_table = True
+            parts = line_stripped.split('|')
+            if parts and not parts[0].strip():
+                parts = parts[1:]
+            if parts and not parts[-1].strip():
+                parts = parts[:-1]
+                
+            row = [cell.strip() for cell in parts]
+            if row and all(all(c in '-: ' for c in cell) for cell in row):
+                continue
+            table_data.append(row)
+            
+        else:
+            if in_table and table_data:
+                render_buffered_table()
+                table_data = []
+                in_table = False
+            
+            # --- Text and Signature Parsing ---
+            if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
+                pdf.cell(0, 5, line_stripped, ln=True, align="R")
+                
+            elif "સાદર નોંધ" in line_stripped:
+                pdf.ln(2)
+                if has_bold:
+                    pdf.set_font("Gujarati", style="B", size=11)
+                pdf.cell(0, 6, line_stripped, ln=True, align="L")
+                pdf.set_font("Gujarati", style="", size=10)
+                
+            elif line_stripped.startswith("વિષય:"):
+                if has_bold:
+                    pdf.set_font("Gujarati", style="B", size=10)
+                pdf.multi_cell(0, 5, line_stripped, align="L")
+                pdf.set_font("Gujarati", style="", size=10)
+                pdf.ln(3)
+                
+            # Collect signatures dynamically instead of printing them inline
+            elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]) and not any(r in line_stripped for r in ["આચાર્ય", "ડીનશ્રી"]):
+                sig_roles_top.append(line_stripped.replace(",", "\n"))
+                
+            elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
+                sig_role_bottom.append(line_stripped)
+                
+            else:
+                pdf.multi_cell(0, 5, line_stripped)
+                pdf.ln(1)
+
+    # Render any remaining table
+    if in_table and table_data:
+        render_buffered_table()
+
+    # --- Render Signature Block Layout ---
+    pdf.ln(10)
+    pdf.set_font("Gujarati", size=9)
+    y_before_sigs = pdf.get_y()
+
+    # Fallback default signatures if none were detected from markdown
+    if not sig_roles_top:
+        sig_roles_top = ["ખેતીવાડી અધિકારી\nકીટકશાસ્ત્ર વિભાગ", "પ્રોજેકટ ઈન્ચાર્જ\nકીટકશાસ્ત્ર વિભાગ", "પ્રાધ્યાપક અને વડા\nકીટકશાસ્ત્ર વિભાગ"]
+    if not sig_role_bottom:
+        sig_role_bottom = ["આચાર્ય અને ડીનશ્રી\nન. મ. કૃષિ મહાવિધાયલય\nન.કૃ.યુ., નવસારી"]
+
+    # Place top 3 signatures
+    if len(sig_roles_top) >= 1:
+        pdf.set_xy(10, y_before_sigs)
+        pdf.multi_cell(35, 4, sig_roles_top[0], align="C")
+    if len(sig_roles_top) >= 2:
+        pdf.set_xy(48, y_before_sigs)
+        pdf.multi_cell(35, 4, sig_roles_top[1], align="C")
+    if len(sig_roles_top) >= 3:
+        pdf.set_xy(86, y_before_sigs)
+        pdf.multi_cell(35, 4, sig_roles_top[2], align="C")
+
+    # Place bottom right signature
+    pdf.ln(12)
+    pdf.set_x(75)
+    pdf.multi_cell(55, 4, "\n".join(sig_role_bottom), align="C")
+
+    # Output for Streamlit
+    return pdf.output()
+
+# ==========================================
+# Streamlit UI Example
+# ==========================================
+st.set_page_config(page_title="સાદર નોંધ PDF Generator", layout="centered")
+st.title("સાદર નોંધ (AINP on Agril Acarology) PDF Generator")
+
+# Temporary sample markdown for testing the UI
+sample_markdown = """સાદર નોંધ:
+વિષય: અખતરામાં વપરાતી વસ્તુઓ ખરીદી કરવા સૈધ્ધાંતિક મંજુરી આપવા બાબત...
+સવિનય ઉપરોક્ત વિષય અન્વયે જણાવવાનું કે, અત્રેનાં કીટકશાસ્ત્ર વિભાગની આઈ.સી.એ.આર. યોજના AINP on Agril Acarology બ.સ. ૩૦૩/૨૦૯૨ અંતર્ગત યોજનાના ફાર્મમાં લેવામાં આવનાર અખતરામાં ટ્રીટમેન્ટનુ નામ દર્શાવતું બોર્ડ લગાવવાની જરૂરિયાત રહે છે. જે નીચે કોષ્ટકમાં દર્શાવેલ મુજબ છે.
+| નં. | વસ્તુઓના નામ | જથ્થો | ભાવ/નંગ | રકમ | સ્ટેચ્યુટ |
+|---|---|---|---|---|---|
+| 1 | PVC Rectangle nameplate | 300 | 80/- | 24000/- | 54 (i) |
+|   | કુલ રકમ |   |   | ૨૪૦૦૦/- |   |
+જે આપ સાહેબશ્રીને સ્ટેચ્યુટ ૧૨૧ની આઈટમ નંબર ૫૪ (૧) તેમજ ૪૫ (૩) (૩) મુજબ એનાયત થયેલ સત્તા અનુસાર સૈન્ધાંતિક મંજુરી આપવા વિનંતી. સદર ખર્ચ અત્રેના વિભાગમાં ચાલતી યોજના (બ.સ. ૩૦૩/૨૦૯૨) માં કરવામાં આવશે.
+ખેતીવાડી અધિકારી, કીટકશાસ્ત્ર વિભાગ
+પ્રોજેકટ ઈન્ચાર્જ, કીટકશાસ્ત્ર વિભાગ
+પ્રાધ્યાપક અને વડા, કીટકશાસ્ત્ર વિભાગ
+આચાર્ય અને ડીનશ્રી
+ન. મ. કૃષિ મહાવિધાયલય
+ન.કૃ.યુ., નવસારી
+"""
+
+st.write("Click below to generate and download the A5 Portrait PDF document.")
+if st.button("Generate PDF"):
+    pdf_bytes = create_pdf(sample_markdown)
+    if pdf_bytes:
+        save_to_db("અખતરામાં વપરાતી વસ્તુઓ ખરીદી", sample_markdown)
+        st.download_button(
+            label="Download સાદર નોંધ",
+            data=bytes(pdf_bytes),
+            file_name="Sadar_Nondh_Acarology.pdf",
+            mime="application/pdf"
+        )
         except Exception as e:
             st.warning(f"Could not load 121 Statutes PDF: {e}")
 
