@@ -8,13 +8,7 @@ import os
 import PyPDF2
 from docx import Document as DocxReader
 import urllib.request
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
-from reportlab.lib import colors
+from fpdf import FPDF
 
 # ==========================================
 # Database Setup for Archiving
@@ -64,7 +58,6 @@ def load_permanent_context():
     statute_text = "Statute 121 Rules:\n"
     sample_text = "Sample Nondh Format:\n"
     
-    # Read Statute PDF
     if os.path.exists("121_Statutes_uploaded.pdf"):
         try:
             with open("121_Statutes_uploaded.pdf", "rb") as f:
@@ -74,7 +67,6 @@ def load_permanent_context():
         except Exception as e:
             st.warning(f"Could not load 121 Statutes PDF: {e}")
 
-    # Read Sample DOCX
     if os.path.exists("sample_nondh_uploaded.docx"):
         try:
             doc = DocxReader("sample_nondh_uploaded.docx")
@@ -86,183 +78,129 @@ def load_permanent_context():
     return statute_text, sample_text
 
 # ==========================================
-# Document Generation Logic (Perfect Half A4 Layout)
+# Document Generation Logic (FPDF2 Engine)
 # ==========================================
 def create_pdf(content):
-    # Download Gujarati Font automatically if missing
     font_path = "NotoSansGujarati-Regular.ttf"
     if not os.path.exists(font_path):
         try:
             url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansGujarati/NotoSansGujarati-Regular.ttf"
             urllib.request.urlretrieve(url, font_path)
-        except Exception as e:
-            pass # Failsafe
+        except Exception:
+            pass
             
+    # Setup A5 Landscape (210 x 148.5 mm)
+    pdf = FPDF(orientation="L", unit="mm", format="A5")
+    pdf.set_margins(10, 10, 10)
+    pdf.add_page()
+    
+    pdf.add_font("Gujarati", style="", fname=font_path)
+    pdf.set_font("Gujarati", size=10)
+    
+    # CRITICAL FIX: Enable Text Shaping to fix Gujarati Matras
     try:
-        pdfmetrics.registerFont(TTFont('Gujarati', font_path))
-        font_name = 'Gujarati'
-    except:
-        font_name = 'Helvetica' # Fallback if font fails
+        pdf.set_text_shaping(True)
+    except Exception:
+        pass # Streamlit cloud will silently fail if uharfbuzz is missing, so ensure it's in requirements
 
-    bio = io.BytesIO()
-    
-    # Half A4 setup (210mm wide x 148.5mm high - A5 Landscape)
-    # Left Margin reduced to 10mm to perfectly match your FPDF X coordinate scaling
-    doc = SimpleDocTemplate(bio, pagesize=(210*mm, 148.5*mm),
-                            rightMargin=10*mm, leftMargin=10*mm,
-                            topMargin=10*mm, bottomMargin=10*mm)
-    
-    styles = {
-        'normal': ParagraphStyle('Normal', fontName=font_name, fontSize=10, leading=15),
-        'bold': ParagraphStyle('Bold', fontName=font_name, fontSize=10, leading=15),
-        'right': ParagraphStyle('Right', fontName=font_name, fontSize=10, leading=15, alignment=TA_RIGHT),
-        'center': ParagraphStyle('Center', fontName=font_name, fontSize=9, leading=12, alignment=TA_CENTER)
-    }
-    
-    elements = []
     lines = content.split('\n')
     table_data = []
     in_table = False
     
-    # Buffer to hold horizontal signatures
-    sig_buffer = []
-
-    def flush_signatures():
-        """Renders signatures at exact absolute X positions (10mm, 48mm, 86mm)."""
-        if sig_buffer:
-            elements.append(Spacer(1, 25)) # Handwritten signature space above
-            
-            # Pad array to ensure correct spacing logic
-            row_data = sig_buffer[:]
-            while len(row_data) < 3:
-                row_data.append(Paragraph("", styles['center']))
-            
-            # Using 38mm column widths places exactly at X=10, 48, and 86 (since margin=10)
-            sig_table = Table([row_data], colWidths=[38*mm, 38*mm, 38*mm])
-            sig_table.setStyle(TableStyle([
-                ('VALIGN', (0,0), (-1,-1), 'TOP'),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('RIGHTPADDING', (0,0), (-1,-1), 0),
-            ]))
-            sig_table.hAlign = 'LEFT'
-            elements.append(sig_table)
-            elements.append(Spacer(1, 5))
-            sig_buffer.clear()
+    sig_roles = []
+    principal_role = ""
 
     for line in lines:
         line_stripped = line.strip()
         
-        # Skip empty lines to control spacing manually
         if not line_stripped:
             continue
             
         if line_stripped.startswith('|'):
             in_table = True
             row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
-            # Skip Markdown separator line (e.g. |---|---|)
             if not all(c == '-' for c in row[0].replace(' ', '')): 
                 table_data.append(row)
         else:
-            # Render Table when exiting the markdown table block
-            if in_table:
-                if table_data:
-                    # Dynamically match requested A5 table layout width
-                    num_cols = len(table_data[0])
-                    if num_cols == 5:
-                        col_widths = [15*mm, 80*mm, 20*mm, 25*mm, 30*mm]
-                    elif num_cols == 6:
-                        col_widths = [15*mm, 50*mm, 20*mm, 25*mm, 30*mm, 30*mm]
-                    else:
-                        col_widths = None
-
-                    table_style = [
-                        ('FONTNAME', (0,0), (-1,-1), font_name),
-                        ('FONTSIZE', (0,0), (-1,-1), 10),
-                        ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-                        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                        ('PADDING', (0,0), (-1,-1), 4),
-                    ]
-                    # Left align the second column (Details/વિગત)
-                    if num_cols > 1:
-                        table_style.append(('ALIGN', (1,0), (1,-1), 'LEFT'))
-                        
-                    t = Table(table_data, colWidths=col_widths)
-                    t.setStyle(TableStyle(table_style))
-                    elements.append(Spacer(1, 5))
-                    elements.append(t)
-                    elements.append(Spacer(1, 5))
+            if in_table and table_data:
+                # Render the Table securely before proceeding
+                pdf.ln(3)
+                num_cols = len(table_data[0])
+                # Perfect column distribution for 5 columns within 190mm usable width
+                c_widths = (15, 75, 25, 30, 35) if num_cols == 5 else None
+                
+                with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7) as table:
+                    for r_idx, row_text in enumerate(table_data):
+                        row = table.row()
+                        for c_idx, cell_text in enumerate(row_text):
+                            # Left align the 'Details' column
+                            row.cell(cell_text, align="L" if c_idx == 1 else "C")
                 table_data = []
                 in_table = False
+                pdf.ln(5)
             
             # Position Specific Text Blocks
             if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
-                flush_signatures()
-                elements.append(Paragraph(line_stripped, styles['right']))
-            
+                pdf.cell(0, 5, line_stripped, ln=True, align="R")
+                
             elif "સાદર નોંધ" in line_stripped:
-                flush_signatures()
-                elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
-                elements.append(Spacer(1, 2))
-            
+                pdf.ln(2)
+                pdf.set_font("Gujarati", size=11)
+                pdf.cell(0, 6, line_stripped, ln=True, align="L")
+                pdf.set_font("Gujarati", size=10)
+                
             elif line_stripped.startswith("વિષય:"):
-                flush_signatures()
-                elements.append(Paragraph(f"<b>{line_stripped}</b>", styles['bold']))
-                elements.append(Spacer(1, 4))
-            
+                pdf.multi_cell(0, 5, line_stripped, align="L")
+                pdf.ln(3)
+                
             elif any(role in line_stripped for role in ["અધિકારી", "ઈન્ચાર્જ", "પ્રાધ્યાપક", "વડા"]) and not any(r in line_stripped for r in ["આચાર્ય", "ડીનશ્રી"]):
-                # Split comma-separated items and join with breaks to stack properly
-                parts = line_stripped.split(",")
-                formatted_sig = "<br/>".join([p.strip() for p in parts])
-                sig_buffer.append(Paragraph(formatted_sig, styles['center']))
+                # Accumulate Committee Signatures
+                sig_roles.append(line_stripped.replace(",", "\n"))
                 
             elif any(role in line_stripped for role in ["આચાર્ય", "ડીનશ્રી", "મહાવિધાયલય", "ન.કૃ.યુ"]):
-                # Flush the top level side-by-side signatures before adding Principal
-                flush_signatures()
+                # Accumulate Principal Signature
+                principal_role += line_stripped.replace(",", "\n") + "\n"
                 
-                parts = line_stripped.split(",")
-                formatted_line = "<br/>".join([p.strip() for p in parts])
-                p_para = Paragraph(formatted_line, styles['center'])
-
-                # Places signature explicitly at X=75 with width 55 (matching FPDF offset)
-                p_table = Table([["", p_para]], colWidths=[65*mm, 55*mm])
-                p_table.setStyle(TableStyle([
-                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
-                    ('ALIGN', (1,0), (1,-1), 'CENTER'),
-                ]))
-                p_table.hAlign = 'LEFT'
-
-                if "આચાર્ય" in line_stripped or "ડીનશ્રી" in line_stripped:
-                    elements.append(Spacer(1, 30)) # Signature Space 
-                elements.append(p_table)
-            
             else:
-                flush_signatures()
-                # Normal Body Text
-                elements.append(Paragraph(line_stripped, styles['normal']))
-                elements.append(Spacer(1, 3))
+                # Standard Body Text
+                pdf.multi_cell(0, 5, line_stripped, align="L")
+                pdf.ln(2)
                 
-    # Final flush and table failsafe
-    flush_signatures()
-    
+    # Failsafe for table ending document
     if in_table and table_data:
-        t = Table(table_data)
-        table_style = [
-            ('FONTNAME', (0,0), (-1,-1), font_name),
-            ('FONTSIZE', (0,0), (-1,-1), 10),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.black),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('PADDING', (0,0), (-1,-1), 4),
-        ]
-        if len(table_data[0]) > 1:
-            table_style.append(('ALIGN', (1,0), (1,-1), 'LEFT'))
-        t.setStyle(TableStyle(table_style))
-        elements.append(t)
+        pdf.ln(3)
+        num_cols = len(table_data[0])
+        c_widths = (15, 75, 25, 30, 35) if num_cols == 5 else None
+        with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7) as table:
+            for r_idx, row_text in enumerate(table_data):
+                row = table.row()
+                for c_idx, cell_text in enumerate(row_text):
+                    row.cell(cell_text, align="L" if c_idx == 1 else "C")
 
-    doc.build(elements)
-    return bio.getvalue()
+    # Render Signatures Using Your Exact Layout
+    if sig_roles:
+        pdf.ln(12) 
+        pdf.set_font("Gujarati", size=9)
+        y_before_sigs = pdf.get_y()
+        
+        x_positions = [10, 48, 86]
+        for idx, role in enumerate(sig_roles):
+            if idx < 3: 
+                pdf.set_xy(x_positions[idx], y_before_sigs)
+                pdf.multi_cell(35, 4, role.strip(), align="C")
+                
+    if principal_role:
+        if sig_roles:
+            pdf.set_y(y_before_sigs + 20)
+        else:
+            pdf.ln(20)
+            
+        pdf.set_font("Gujarati", size=9)
+        pdf.set_x(75)
+        pdf.multi_cell(55, 4, principal_role.strip(), align="C")
+
+    # Output to byte array for Streamlit download
+    return bytes(pdf.output())
 
 # ==========================================
 # Streamlit App UI
@@ -410,7 +348,7 @@ with tab3:
             if st.button("Save Statute PDF"):
                 with open("121_Statutes_uploaded.pdf", "wb") as f:
                     f.write(statute_file.getbuffer())
-                load_permanent_context.clear() # Clear cache to refresh context
+                load_permanent_context.clear() 
                 st.success("Statute PDF saved permanently!")
         
         if os.path.exists("121_Statutes_uploaded.pdf"):
@@ -422,9 +360,8 @@ with tab3:
             if st.button("Save Sample DOCX"):
                 with open("sample_nondh_uploaded.docx", "wb") as f:
                     f.write(sample_file.getbuffer())
-                load_permanent_context.clear() # Clear cache to refresh context
+                load_permanent_context.clear() 
                 st.success("Sample DOCX saved permanently!")
                 
         if os.path.exists("sample_nondh_uploaded.docx"):
             st.success("✅ Sample DOCX is currently saved and active.")
-
