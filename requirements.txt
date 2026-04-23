@@ -1,7 +1,7 @@
 streamlit
 google-generativeai
-python-docx
-pillow
+Pillow
 PyPDF2
-fpdf2
-uharfbuzz
+python-docx
+reportlab
+
