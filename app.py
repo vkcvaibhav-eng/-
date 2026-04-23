@@ -97,11 +97,11 @@ def create_pdf(content):
     pdf.add_font("Gujarati", style="", fname=font_path)
     pdf.set_font("Gujarati", size=10)
     
-    # CRITICAL FIX: Enable Text Shaping to fix Gujarati Matras
+    # Enable Text Shaping to fix Gujarati Matras
     try:
         pdf.set_text_shaping(True)
     except Exception:
-        pass # Streamlit cloud will silently fail if uharfbuzz is missing, so ensure it's in requirements
+        pass 
 
     lines = content.split('\n')
     table_data = []
@@ -109,6 +109,28 @@ def create_pdf(content):
     
     sig_roles = []
     principal_role = ""
+
+    def render_buffered_table():
+        if not table_data:
+            return
+        pdf.ln(3)
+        # Find exactly how many columns the table should have based on the longest row
+        max_cols = max(len(r) for r in table_data)
+        
+        # Pad any rows that might have missing cells to prevent FPDFException
+        for r in table_data:
+            while len(r) < max_cols:
+                r.append("")
+                
+        c_widths = (15, 75, 25, 30, 35) if max_cols == 5 else None
+        
+        with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7) as table:
+            for row_text in table_data:
+                row = table.row()
+                for c_idx, cell_text in enumerate(row_text):
+                    # Left align the 'Details' column
+                    row.cell(cell_text, align="L" if c_idx == 1 else "C")
+        pdf.ln(5)
 
     for line in lines:
         line_stripped = line.strip()
@@ -118,26 +140,26 @@ def create_pdf(content):
             
         if line_stripped.startswith('|'):
             in_table = True
-            row = [cell.strip() for cell in line_stripped.split('|') if cell.strip()]
-            if not all(c == '-' for c in row[0].replace(' ', '')): 
-                table_data.append(row)
+            
+            # Correct markdown parsing (preserves empty cells)
+            parts = line_stripped.split('|')
+            if parts and not parts[0].strip():
+                parts = parts[1:]
+            if parts and not parts[-1].strip():
+                parts = parts[:-1]
+                
+            row = [cell.strip() for cell in parts]
+            
+            # Skip markdown separator lines (e.g. |:---|:---|) safely
+            if row and all(all(c in '-: ' for c in cell) for cell in row):
+                continue
+                
+            table_data.append(row)
         else:
             if in_table and table_data:
-                # Render the Table securely before proceeding
-                pdf.ln(3)
-                num_cols = len(table_data[0])
-                # Perfect column distribution for 5 columns within 190mm usable width
-                c_widths = (15, 75, 25, 30, 35) if num_cols == 5 else None
-                
-                with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7) as table:
-                    for r_idx, row_text in enumerate(table_data):
-                        row = table.row()
-                        for c_idx, cell_text in enumerate(row_text):
-                            # Left align the 'Details' column
-                            row.cell(cell_text, align="L" if c_idx == 1 else "C")
+                render_buffered_table()
                 table_data = []
                 in_table = False
-                pdf.ln(5)
             
             # Position Specific Text Blocks
             if line_stripped.startswith("તા.") or line_stripped.startswith("સ્થળ:"):
@@ -166,16 +188,9 @@ def create_pdf(content):
                 pdf.multi_cell(0, 5, line_stripped, align="L")
                 pdf.ln(2)
                 
-    # Failsafe for table ending document
+    # Failsafe for a table at the very end of the document
     if in_table and table_data:
-        pdf.ln(3)
-        num_cols = len(table_data[0])
-        c_widths = (15, 75, 25, 30, 35) if num_cols == 5 else None
-        with pdf.table(borders_layout="ALL", text_align="CENTER", col_widths=c_widths, line_height=7) as table:
-            for r_idx, row_text in enumerate(table_data):
-                row = table.row()
-                for c_idx, cell_text in enumerate(row_text):
-                    row.cell(cell_text, align="L" if c_idx == 1 else "C")
+        render_buffered_table()
 
     # Render Signatures Using Your Exact Layout
     if sig_roles:
@@ -300,11 +315,14 @@ with tab1:
                 st.success("નોંધ ડેટાબેઝમાં સાચવી લેવામાં આવી છે!")
                 
         with col_down:
-            pdf_data = create_pdf(edited_text)
-            st.download_button(label="Download as PDF",
-                               data=pdf_data,
-                               file_name=f"Sadar_Nondh_{datetime.date.today().strftime('%d_%m_%Y')}.pdf",
-                               mime="application/pdf")
+            try:
+                pdf_data = create_pdf(edited_text)
+                st.download_button(label="Download as PDF",
+                                   data=pdf_data,
+                                   file_name=f"Sadar_Nondh_{datetime.date.today().strftime('%d_%m_%Y')}.pdf",
+                                   mime="application/pdf")
+            except Exception as e:
+                st.error(f"Error building PDF layout: {e}")
 
 with tab2:
     st.markdown("### જુની નોંધ શોધો (Search Archives)")
@@ -327,12 +345,15 @@ with tab2:
                 with st.expander(f"{date} - {subject}"):
                     st.text(content)
                     
-                    archived_pdf = create_pdf(content)
-                    st.download_button(label="Download this Document (PDF)",
-                                       data=archived_pdf,
-                                       file_name=f"Archive_{date.replace('/', '_')}.pdf",
-                                       mime="application/pdf",
-                                       key=f"dl_{idx}")
+                    try:
+                        archived_pdf = create_pdf(content)
+                        st.download_button(label="Download this Document (PDF)",
+                                           data=archived_pdf,
+                                           file_name=f"Archive_{date.replace('/', '_')}.pdf",
+                                           mime="application/pdf",
+                                           key=f"dl_{idx}")
+                    except Exception as e:
+                        st.error(f"Error rebuilding archive PDF layout: {e}")
         else:
             st.info("કોઈ રેકોર્ડ મળેલ નથી (No records found for this period).")
 
